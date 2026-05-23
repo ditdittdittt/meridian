@@ -875,3 +875,45 @@ export function getReasonPerformance({ hours = null, minSamples = 3 } = {}) {
     buckets: summary,
   };
 }
+
+/**
+ * Format the reason-performance data as a compact, prompt-ready table string
+ * for injection into the SCREENER system prompt. Returns null when there are
+ * no buckets with enough samples (so the caller can skip the section entirely).
+ *
+ * @param {Object} [opts]
+ * @param {number} [opts.hours]      - Time window in hours (null = all-time)
+ * @param {number} [opts.minSamples=3] - Minimum samples per bucket to include
+ * @returns {string|null}
+ */
+export function getReasonPerformanceSummary({ hours = null, minSamples = 3 } = {}) {
+  const { total_with_reason, buckets } = getReasonPerformance({ hours, minSamples });
+  if (!buckets || buckets.length === 0) return null;
+
+  const lines = [
+    `DEPLOY REASONING PERFORMANCE (n=${total_with_reason} closed positions with linked rationale${hours ? `, last ${hours}h` : ", all-time"}):`,
+    `${"reason".padEnd(18)} ${"n".padStart(4)}  ${"win%".padStart(5)}  ${"avg_pnl%".padStart(9)}  ${"range_eff%".padStart(10)}  edge`,
+    "─".repeat(70),
+  ];
+
+  for (const b of buckets) {
+    const edge =
+      b.win_rate_pct >= 65 ? "✅ strong" :
+      b.win_rate_pct >= 50 ? "✅ decent" :
+      b.win_rate_pct >= 40 ? "⚠️  mixed"  :
+                             "❌ weak";
+
+    const pnl = (b.avg_pnl_pct >= 0 ? "+" : "") + b.avg_pnl_pct.toFixed(2) + "%";
+    lines.push(
+      `${b.reason.padEnd(18)} ${String(b.sample_count).padStart(4)}  ${String(b.win_rate_pct).padStart(4)}%  ${pnl.padStart(9)}  ${String(b.avg_range_efficiency_pct).padStart(9)}%  ${edge}`
+    );
+  }
+
+  lines.push(
+    "",
+    "Use this table when picking a candidate: favour setups where your rationale",
+    "matches ✅ reasons. Raise your conviction bar if only ⚠️/❌ reasons apply.",
+  );
+
+  return lines.join("\n");
+}

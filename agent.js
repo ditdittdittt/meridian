@@ -88,7 +88,7 @@ import { getMyPositions } from "./tools/dlmm.js";
 import { log } from "./logger.js";
 import { config } from "./config.js";
 import { getStateSummary } from "./state.js";
-import { getLessonsForPrompt, getPerformanceSummary } from "./lessons.js";
+import { getLessonsForPrompt, getPerformanceSummary, getReasonPerformanceSummary } from "./lessons.js";
 import { getDecisionSummary } from "./decision-log.js";
 
 // Supports OpenRouter (default) or any OpenAI-compatible local server (e.g. LM Studio)
@@ -158,14 +158,18 @@ export async function agentLoop(goal, maxSteps = config.llm.maxSteps, sessionHis
   const perfSummary = getPerformanceSummary();
   const decisionSummary = getDecisionSummary();
   let weightsSummary = null;
+  let reasonPerfSummary = null;
   if (agentType === "SCREENER") {
     try {
       const { getWeightsSummary } = await import("./signal-weights.js");
       const { config } = await import("./config.js");
       if (config.darwin?.enabled) weightsSummary = getWeightsSummary();
     } catch { /* signal-weights not critical */ }
+    try {
+      reasonPerfSummary = getReasonPerformanceSummary();
+    } catch { /* reason-perf not critical */ }
   }
-  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary, decisionSummary);
+  const systemPrompt = buildSystemPrompt(agentType, portfolio, positions, stateSummary, lessons, perfSummary, weightsSummary, decisionSummary, reasonPerfSummary);
 
   let providerMode = "system";
   let messages = buildMessages(systemPrompt, sessionHistory, goal, providerMode);
