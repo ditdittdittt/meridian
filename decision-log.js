@@ -52,6 +52,18 @@ export function getRecentDecisions(limit = 10) {
   return (data.decisions || []).slice(0, limit);
 }
 
+/**
+ * Look up a single decision by its id. Returns null when not found —
+ * decisions are pruned to MAX_DECISIONS so very old entries may be gone.
+ * Used by the performance-recording flow to attach the original deploy
+ * rationale to closed-position records.
+ */
+export function getDecisionById(id) {
+  if (!id) return null;
+  const data = load();
+  return (data.decisions || []).find((d) => d.id === id) || null;
+}
+
 export function getDecisionSummary(limit = 6) {
   const decisions = getRecentDecisions(limit);
   if (!decisions.length) return "No recent structured decisions yet.";
