@@ -16,7 +16,16 @@ const WEIGHTS_FILE = "./signal-weights.json";
 
 // ─── Signal Definitions ─────────────────────────────────────────
 
-const SIGNAL_NAMES = [
+// Single source of truth for the predictive signals tracked at deploy time
+// and analyzed at close time. Imported by lessons.js and tools/dlmm.js so
+// the snapshot schema, weight calculations, and field merging all agree.
+//
+// NOTE: study_win_rate and hive_consensus are declared here for forward
+// compatibility but are NOT currently populated by stageSignals(). They will
+// always have null lift until a producer is wired up (study cycle, hive sync).
+// computeLift() already returns null for signals without samples, so they
+// silently default to weight 1.0 — no behavioral impact today.
+export const SIGNAL_NAMES = [
   "organic_score",
   "fee_tvl_ratio",
   "volume",
@@ -24,8 +33,8 @@ const SIGNAL_NAMES = [
   "holder_count",
   "smart_wallets_present",
   "narrative_quality",
-  "study_win_rate",
-  "hive_consensus",
+  "study_win_rate",      // placeholder — not yet staged
+  "hive_consensus",      // placeholder — not yet staged
   "volatility",
 ];
 
@@ -289,6 +298,16 @@ function mean(arr) {
 }
 
 // ─── Summary for LLM Prompt Injection ────────────────────────────
+
+/**
+ * Get the current learned weights map for use in candidate scoring.
+ * Returns a fresh object — safe to mutate. Missing signals fall back to 1.0
+ * at the call site if needed.
+ */
+export function getCurrentWeights() {
+  const data = loadWeights();
+  return { ...DEFAULT_WEIGHTS, ...(data.weights || {}) };
+}
 
 export function getWeightsSummary() {
   const data = loadWeights();

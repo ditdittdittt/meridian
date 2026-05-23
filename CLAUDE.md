@@ -192,9 +192,9 @@ const actualBaseFee = baseFactor > 0
 
 `lessons.js` records closed position performance and auto-derives lessons. Key points:
 - `getLessonsForPrompt({ agentType })` — injects relevant lessons into system prompt
-- `evolveThresholds()` — adjusts screening thresholds based on winners vs losers
+- `evolveThresholds()` — adjusts screening thresholds (`minOrganic`, `minFeeActiveTvlRatio`, `maxVolatility`) based on winners vs losers
 - Performance recorded via `recordPerformance()` called from executor.js after `close_position`
-- **Known issue**: `evolveThresholds()` references `maxVolatility` and `minFeeTvlRatio` but config.js uses `minFeeActiveTvlRatio` and has no `maxVolatility` key — the evolution of these keys is a no-op
+- Darwin signal-weight recalc cadence is controlled separately by `darwinRecalcEvery`; threshold evolution runs every `MIN_EVOLVE_POSITIONS` (5) closes
 
 ---
 
@@ -224,5 +224,5 @@ Agent Meridian HiveMind sync is handled by `hivemind.js`. It uses built-in Agent
 
 ## Known Issues / Tech Debt
 
-- `lessons.js evolveThresholds()` evolves `maxVolatility` + `minFeeTvlRatio` (wrong key names — should be `minFeeActiveTvlRatio`; `maxVolatility` doesn't exist in config at all). The evolution is a no-op for those keys.
 - `get_wallet_positions` tool (dlmm.js) is in definitions.js but not in MANAGER_TOOLS or SCREENER_TOOLS — only available in GENERAL role.
+- `study_win_rate` and `hive_consensus` are declared in `SIGNAL_NAMES` (signal-weights.js) but no producer stages them today; they sit at the default weight 1.0 and contribute nothing to candidate scoring. Add a producer in `index.js` `stageSignals(...)` to activate them.
