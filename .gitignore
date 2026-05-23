@@ -36,6 +36,9 @@ docs/
 # Discord listener queue
 discord-signals.json
 
+# Signal staging (written during screening, consumed at deploy — runtime-only)
+staged-signals.json
+
 # Playwright MCP browser logs
 .playwright-mcp/
 

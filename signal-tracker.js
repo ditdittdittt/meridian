@@ -1,13 +1,20 @@
 /**
  * signal-tracker.js — Stages screening signals for later attribution.
  *
- * Deploy-time persistence is not currently wired, so staged signals are
- * short-lived context rather than durable performance data.
+ * Signals are written through to staged-signals.json so they survive a
+ * process restart between screen and deploy (the typical run-once-per-tick
+ * schedule means screening and deploying happen in separate invocations).
+ *
+ * Disk format: { "<poolAddress>": { ...signals, staged_at: <epochMs> }, … }
+ * Entries older than STAGE_TTL_MS are skipped on load and never saved back.
  */
 
+import fs from "fs";
 import { log } from "./logger.js";
 
-// In-memory staging area — cleared after retrieval or after 10 minutes
+const STAGE_FILE = "./staged-signals.json";
+
+// In-memory staging area — primary look-up; disk is the persistence layer
 const _staged = new Map();
 const _stagedByBaseMint = new Map();
 const STAGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -16,17 +23,60 @@ function normalizeKey(value) {
   return value ? String(value).trim() : null;
 }
 
+// ─── Disk helpers ────────────────────────────────────────────────────────────
+
+function _loadFromDisk() {
+  if (!fs.existsSync(STAGE_FILE)) return;
+  try {
+    const raw = JSON.parse(fs.readFileSync(STAGE_FILE, "utf8"));
+    const now = Date.now();
+    for (const [poolKey, entry] of Object.entries(raw || {})) {
+      // Skip stale entries on load — no point hydrating something we'd TTL out
+      if (now - (entry.staged_at || 0) > STAGE_TTL_MS) continue;
+      if (!_staged.has(poolKey)) {
+        _staged.set(poolKey, entry);
+        const bm = normalizeKey(entry.base_mint);
+        if (bm) _stagedByBaseMint.set(bm, poolKey);
+      }
+    }
+  } catch (err) {
+    log("signal_tracker_warn", `Could not load ${STAGE_FILE}: ${err.message}`);
+  }
+}
+
+function _saveToDisk() {
+  const data = {};
+  for (const [poolKey, entry] of _staged) {
+    data[poolKey] = entry;
+  }
+  try {
+    fs.writeFileSync(STAGE_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    log("signal_tracker_warn", `Could not save ${STAGE_FILE}: ${err.message}`);
+  }
+}
+
+// Hydrate from disk once at module load — handles the restart-between-ticks case
+_loadFromDisk();
+
+// ─── TTL cleanup ─────────────────────────────────────────────────────────────
+
 function cleanupStale() {
   const now = Date.now();
+  let changed = false;
   for (const [addr, data] of _staged) {
     if (now - data.staged_at > STAGE_TTL_MS) {
       _staged.delete(addr);
       if (data.base_mint && _stagedByBaseMint.get(data.base_mint) === addr) {
         _stagedByBaseMint.delete(data.base_mint);
       }
+      changed = true;
     }
   }
+  return changed;
 }
+
+// ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
  * Stage signals for a pool during screening.
@@ -48,6 +98,8 @@ export function stageSignals(poolAddress, signals) {
   if (baseMint) {
     _stagedByBaseMint.set(baseMint, poolKey);
   }
+
+  _saveToDisk();
 }
 
 /**
@@ -73,6 +125,9 @@ export function getAndClearStagedSignals(poolAddress, baseMint = null) {
   if (data.base_mint && _stagedByBaseMint.get(data.base_mint) === poolKey) {
     _stagedByBaseMint.delete(data.base_mint);
   }
+
+  _saveToDisk();
+
   const { staged_at, ...signals } = data;
   log("signals", `Retrieved staged signals for ${poolKey.slice(0, 8)}: ${Object.keys(signals).filter(k => signals[k] != null).length} signals`);
   return signals;
