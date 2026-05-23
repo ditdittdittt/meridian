@@ -613,6 +613,29 @@ const ROLE_TAGS = {
   GENERAL:  [], // all lessons
 };
 
+// Half-life for lesson confidence decay: after this many days, effective
+// confidence is halved. Prevents old observations from being weighted the
+// same as fresh data in the prompt.
+const LESSON_HALF_LIFE_DAYS = 14;
+
+/**
+ * Compute the time-decayed effective confidence for a lesson.
+ *
+ * Confidence halves every LESSON_HALF_LIFE_DAYS days, floored at 5% of the
+ * original so that ancient but pinned lessons aren't reduced to noise.
+ *
+ * @param {Object} lesson
+ * @param {number} [halfLifeDays]
+ * @returns {number} Effective confidence in [0, 1]
+ */
+function decayedConfidence(lesson, halfLifeDays = LESSON_HALF_LIFE_DAYS) {
+  const base = lesson.confidence ?? 0.5;
+  if (!lesson.created_at) return base; // no timestamp → no decay
+  const ageDays = (Date.now() - new Date(lesson.created_at).getTime()) / 86_400_000;
+  const factor = Math.pow(0.5, ageDays / halfLifeDays);
+  return Math.max(base * factor, base * 0.05); // floor: never below 5 % of original
+}
+
 /**
  * Get lessons formatted for injection into the system prompt.
  * Structured injection with three tiers:
@@ -668,11 +691,13 @@ export function getLessonsForPrompt(opts = {}) {
   roleMatched.forEach((l) => usedIds.add(l.id));
 
   // ── Tier 3: Recent fill ─────────────────────────────────────────
+  // Sort by decayed confidence rather than raw date so older lessons with
+  // still-high confidence surface ahead of very-recent low-confidence ones.
   const remainingBudget = RECENT_CAP - pinned.length - roleMatched.length;
   const recent = remainingBudget > 0
     ? data.lessons
         .filter((l) => !usedIds.has(l.id))
-        .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))
+        .sort((a, b) => decayedConfidence(b) - decayedConfidence(a))
         .slice(0, remainingBudget)
     : [];
 
@@ -696,7 +721,14 @@ function fmt(lessons) {
   return lessons.map((l) => {
     const date = l.created_at ? l.created_at.slice(0, 16).replace("T", " ") : "unknown";
     const pin  = l.pinned ? "📌 " : "";
-    return `${pin}[${l.outcome.toUpperCase()}] [${date}] ${l.rule}`;
+    const dc   = decayedConfidence(l);
+    // Show effective confidence so the LLM knows how much to trust each lesson.
+    // ⚠️stale appears once the lesson has aged past one full half-life (dc < 50 %
+    // of the original recorded confidence).
+    const confStr = l.confidence != null
+      ? ` (conf=${Math.round(dc * 100)}%${dc < (l.confidence) * 0.5 ? " ⚠️stale" : ""})`
+      : "";
+    return `${pin}[${l.outcome.toUpperCase()}] [${date}]${confStr} ${l.rule}`;
   }).join("\n");
 }
 
