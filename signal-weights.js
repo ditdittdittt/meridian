@@ -319,7 +319,10 @@ export function getCurrentWeights() {
 
 export function getWeightsSummary() {
   const data = loadWeights();
-  const w = data.weights || {};
+  // Merge persisted weights over defaults so signals added to SIGNAL_NAMES
+  // after the file was created still appear in the summary at weight 1.0,
+  // rather than being silently hidden until the next Darwin recalc.
+  const w = { ...DEFAULT_WEIGHTS, ...(data.weights || {}) };
 
   const lines = ["Signal Weights (Darwinian — learned from past positions):"];
   const sorted = SIGNAL_NAMES
