@@ -36,6 +36,14 @@ export const SIGNAL_NAMES = [
   "study_win_rate",      // placeholder — not yet staged
   "hive_consensus",      // placeholder — not yet staged
   "volatility",
+  // Rich context signals — staged from audit / OKX / token-info data.
+  // Darwin computes absolute lift for these (lower-is-better semantics are
+  // handled by the LLM prompt; the weight just signals "pay attention here").
+  "bot_holder_pct",      // ti.audit.bot_holders_pct — lower = cleaner holder base
+  "top10_pct",           // ti.audit.top_holders_pct — lower = less concentration risk
+  "token_age_hours",     // pool.token_age_hours    — token maturity signal
+  "ath_distance",        // pool.price_vs_ath_pct   — proximity to all-time high
+  "launchpad_present",   // Boolean: ti.launchpad != null — launched via known platform
 ];
 
 const DEFAULT_WEIGHTS = Object.fromEntries(SIGNAL_NAMES.map((s) => [s, 1.0]));
@@ -51,7 +59,7 @@ const HIGHER_IS_BETTER = new Set([
 ]);
 
 // Boolean signals — compared by win rate when present vs absent
-const BOOLEAN_SIGNALS = new Set(["smart_wallets_present"]);
+const BOOLEAN_SIGNALS = new Set(["smart_wallets_present", "launchpad_present"]);
 
 // Categorical signals — compared by win rate across categories
 const CATEGORICAL_SIGNALS = new Set(["narrative_quality"]);

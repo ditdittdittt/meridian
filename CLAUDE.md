@@ -225,4 +225,5 @@ Agent Meridian HiveMind sync is handled by `hivemind.js`. It uses built-in Agent
 ## Known Issues / Tech Debt
 
 - `get_wallet_positions` tool (dlmm.js) is in definitions.js but not in MANAGER_TOOLS or SCREENER_TOOLS — only available in GENERAL role.
-- `study_win_rate` and `hive_consensus` are declared in `SIGNAL_NAMES` (signal-weights.js) but no producer stages them today; they sit at the default weight 1.0 and contribute nothing to candidate scoring. Add a producer in `index.js` `stageSignals(...)` to activate them.
+- `study_win_rate` and `hive_consensus` are declared in `SIGNAL_NAMES` (signal-weights.js) but no producer stages them today; they sit at the default weight 1.0 and contribute nothing to candidate scoring. To activate: stage `study_win_rate` from the study-cycle output and `hive_consensus` from the HiveMind sync response.
+- Lesson confidence scores never decay — old lessons stay at their recorded confidence indefinitely. Consider adding a time-decay pass in `getLessonsForPrompt()` that reduces `confidence` by a half-life factor (e.g. halve every 14 days) before injecting into the prompt.
