@@ -592,6 +592,7 @@ export async function runScreeningCycle({ silent = false } = {}) {
         const baseMint = pool.base?.mint || pool.base_mint || ti?.mint || null;
         stageSignals(pool.pool, {
           base_mint:             baseMint,
+          // Core screening signals
           organic_score:         pool.organic_score         ?? null,
           fee_tvl_ratio:         pool.fee_active_tvl_ratio  ?? null,
           volume:                pool.volume_window         ?? null,
@@ -600,6 +601,12 @@ export async function runScreeningCycle({ silent = false } = {}) {
           smart_wallets_present: (sw?.in_pool?.length ?? 0) > 0,
           narrative_quality:     n?.narrative ? "present" : "absent",
           volatility:            pool.volatility            ?? null,
+          // Rich context signals — available from audit / OKX / token-info
+          bot_holder_pct:        ti?.audit?.bot_holders_pct  ?? null,
+          top10_pct:             ti?.audit?.top_holders_pct  ?? null,
+          token_age_hours:       pool.token_age_hours        ?? null,
+          ath_distance:          pool.price_vs_ath_pct       ?? null,
+          launchpad_present:     ti?.launchpad != null,
         });
       }
 
