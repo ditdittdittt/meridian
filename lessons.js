@@ -11,25 +11,17 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
 import { getSharedLessonsForPrompt, pushHiveLesson, pushHivePerformanceEvent } from "./hivemind.js";
+import { SIGNAL_NAMES } from "./signal-weights.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
 
 const LESSONS_FILE = "./lessons.json";
-const MIN_EVOLVE_POSITIONS = 5;   // don't evolve until we have real data
+const MIN_EVOLVE_POSITIONS = 5;   // don't evolve thresholds until we have real data
 const MAX_CHANGE_PER_STEP  = 0.20; // never shift a threshold more than 20% at once
-const PERFORMANCE_SIGNAL_FIELDS = [
-  "organic_score",
-  "fee_tvl_ratio",
-  "volume",
-  "mcap",
-  "holder_count",
-  "smart_wallets_present",
-  "narrative_quality",
-  "study_win_rate",
-  "hive_consensus",
-  "volatility",
-];
+// Shared schema: same list drives signal-weights, snapshot reconstruction (dlmm.js),
+// and signal recording here. Single source of truth lives in signal-weights.js.
+const PERFORMANCE_SIGNAL_FIELDS = SIGNAL_NAMES;
 const MAX_MANUAL_LESSON_LENGTH = 400;
 
 function sanitizeLessonText(text, maxLen = MAX_MANUAL_LESSON_LENGTH) {
@@ -177,22 +169,24 @@ export async function recordPerformance(perf) {
     });
   }
 
-  // Evolve thresholds every 5 closed positions
+  // Evolve thresholds every MIN_EVOLVE_POSITIONS closed positions
+  const { config, reloadScreeningThresholds } = await import("./config.js");
   if (data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
-    const { config, reloadScreeningThresholds } = await import("./config.js");
     const result = evolveThresholds(data.performance, config);
     if (result?.changes && Object.keys(result.changes).length > 0) {
       reloadScreeningThresholds();
       log("evolve", `Auto-evolved thresholds: ${JSON.stringify(result.changes)}`);
     }
+  }
 
-    // Darwinian signal weight recalculation
-    if (config.darwin?.enabled) {
-      const { recalculateWeights } = await import("./signal-weights.js");
-      const wResult = recalculateWeights(data.performance, config);
-      if (wResult.changes.length > 0) {
-        log("evolve", `Darwin: adjusted ${wResult.changes.length} signal weight(s)`);
-      }
+  // Darwinian signal weight recalculation — separate cadence via config.darwin.recalcEvery
+  // (previously the user-facing darwinRecalcEvery setting was silently ignored)
+  const darwinRecalcEvery = Math.max(1, Number(config.darwin?.recalcEvery ?? MIN_EVOLVE_POSITIONS));
+  if (config.darwin?.enabled && data.performance.length % darwinRecalcEvery === 0) {
+    const { recalculateWeights } = await import("./signal-weights.js");
+    const wResult = recalculateWeights(data.performance, config);
+    if (wResult.changes.length > 0) {
+      log("evolve", `Darwin: adjusted ${wResult.changes.length} signal weight(s)`);
     }
   }
 
@@ -324,10 +318,14 @@ export function evolveThresholds(perfData, config) {
   // ── 1. maxVolatility ─────────────────────────────────────────
   // If losers tend to cluster at higher volatility → tighten the ceiling.
   // If winners span higher volatility safely → we can loosen a bit.
+  // Requires config.screening.maxVolatility (defined in config.js, defaults to null
+  // which disables the filter). Evolution writes a numeric ceiling once enough
+  // loser/winner volatility data is available.
   {
     const winnerVols = winners.map((p) => p.volatility).filter(isFiniteNum);
     const loserVols  = losers.map((p) => p.volatility).filter(isFiniteNum);
-    const current    = config.screening.maxVolatility;
+    // Treat unset ceiling as "no ceiling" — use a high sentinel so evolution can lower it.
+    const current    = config.screening.maxVolatility ?? 20.0;
 
     if (loserVols.length >= 2) {
       // 25th percentile of loser volatilities — this is where things start going wrong
@@ -357,12 +355,15 @@ export function evolveThresholds(perfData, config) {
     }
   }
 
-  // ── 2. minFeeTvlRatio ─────────────────────────────────────────
+  // ── 2. minFeeActiveTvlRatio ─────────────────────────────────────
   // Raise the floor if low-fee pools consistently underperform.
+  // Previously this evolved `minFeeTvlRatio` which doesn't exist in config —
+  // the real key is `minFeeActiveTvlRatio` (used by screening.js as a filter
+  // and persisted via reloadScreeningThresholds).
   {
     const winnerFees = winners.map((p) => p.fee_tvl_ratio).filter(isFiniteNum);
     const loserFees  = losers.map((p) => p.fee_tvl_ratio).filter(isFiniteNum);
-    const current    = config.screening.minFeeTvlRatio;
+    const current    = config.screening.minFeeActiveTvlRatio;
 
     if (winnerFees.length >= 2) {
       // Minimum fee/TVL among winners — we know pools below this don't work for us
@@ -372,8 +373,8 @@ export function evolveThresholds(perfData, config) {
         const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.05, 10.0);
         const rounded = Number(newVal.toFixed(2));
         if (rounded > current) {
-          changes.minFeeTvlRatio = rounded;
-          rationale.minFeeTvlRatio = `Lowest winner fee_tvl=${minWinnerFee.toFixed(2)} — raised floor from ${current} → ${rounded}`;
+          changes.minFeeActiveTvlRatio = rounded;
+          rationale.minFeeActiveTvlRatio = `Lowest winner fee_tvl=${minWinnerFee.toFixed(2)} — raised floor from ${current} → ${rounded}`;
         }
       }
     }
@@ -388,9 +389,9 @@ export function evolveThresholds(perfData, config) {
           const target  = maxLoserFee * 1.2;
           const newVal  = clamp(nudge(current, target, MAX_CHANGE_PER_STEP), 0.05, 10.0);
           const rounded = Number(newVal.toFixed(2));
-          if (rounded > current && !changes.minFeeTvlRatio) {
-            changes.minFeeTvlRatio = rounded;
-            rationale.minFeeTvlRatio = `Losers had fee_tvl<=${maxLoserFee.toFixed(2)}, winners higher — raised floor from ${current} → ${rounded}`;
+          if (rounded > current && !changes.minFeeActiveTvlRatio) {
+            changes.minFeeActiveTvlRatio = rounded;
+            rationale.minFeeActiveTvlRatio = `Losers had fee_tvl<=${maxLoserFee.toFixed(2)}, winners higher — raised floor from ${current} → ${rounded}`;
           }
         }
       }
@@ -437,9 +438,9 @@ export function evolveThresholds(perfData, config) {
 
   // Apply to live config object immediately
   const s = config.screening;
-  if (changes.maxVolatility    != null) s.maxVolatility    = changes.maxVolatility;
-  if (changes.minFeeTvlRatio   != null) s.minFeeTvlRatio   = changes.minFeeTvlRatio;
-  if (changes.minOrganic       != null) s.minOrganic       = changes.minOrganic;
+  if (changes.maxVolatility        != null) s.maxVolatility        = changes.maxVolatility;
+  if (changes.minFeeActiveTvlRatio != null) s.minFeeActiveTvlRatio = changes.minFeeActiveTvlRatio;
+  if (changes.minOrganic           != null) s.minOrganic           = changes.minOrganic;
 
   // Log a lesson summarizing the evolution
   const data = load();

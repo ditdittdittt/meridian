@@ -5,6 +5,7 @@ import { log } from "../logger.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
 import { confirmIndicatorPreset } from "./chart-indicators.js";
 import { getAgentMeridianBase, getAgentMeridianHeaders } from "./agent-meridian.js";
+import { getCurrentWeights } from "../signal-weights.js";
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
@@ -30,12 +31,40 @@ function normalizeSymbol(symbol) {
   return String(symbol || "").trim().toUpperCase();
 }
 
-function scoreCandidate(pool) {
-  const feeTvl = Number(pool.fee_active_tvl_ratio || 0);
+/**
+ * Score a candidate for ranking.
+ *
+ * When Darwin signal weighting is enabled, each term is scaled by the
+ * learned weight for that signal so the agent's past performance actually
+ * affects candidate ordering. Pass a `weights` object (from
+ * getCurrentWeights()) to apply weighting; omit it for the raw score.
+ */
+function scoreCandidate(pool, weights = null) {
+  const feeTvl  = Number(pool.fee_active_tvl_ratio || 0);
   const organic = Number(pool.organic_score || 0);
-  const volume = Number(pool.volume_window || 0);
+  const volume  = Number(pool.volume_window || 0);
   const holders = Number(pool.holders || 0);
-  return feeTvl * 1000 + organic * 10 + volume / 100 + holders / 100;
+
+  // Apply Darwin weights if provided; default to 1.0 (no-op) otherwise.
+  const w = (key) => (weights && Number.isFinite(weights[key]) ? weights[key] : 1.0);
+
+  return feeTvl  * 1000 * w("fee_tvl_ratio")
+       + organic * 10   * w("organic_score")
+       + (volume  / 100) * w("volume")
+       + (holders / 100) * w("holder_count");
+}
+
+/**
+ * Build a Darwin weight map for candidate scoring. Returns null when the
+ * feature is disabled so the caller can skip the lookup overhead.
+ */
+function getScoringWeights() {
+  if (!config.darwin?.enabled) return null;
+  try {
+    return getCurrentWeights();
+  } catch {
+    return null;
+  }
 }
 
 function numeric(value) {
@@ -285,8 +314,9 @@ async function findRivalPool(mint) {
 }
 
 async function enrichPvpRisk(pools) {
+  const weights = getScoringWeights();
   const shortlist = [...pools]
-    .sort((a, b) => scoreCandidate(b) - scoreCandidate(a))
+    .sort((a, b) => scoreCandidate(b, weights) - scoreCandidate(a, weights))
     .slice(0, PVP_SHORTLIST_LIMIT);
 
   if (shortlist.length === 0) return;
@@ -505,8 +535,11 @@ export async function getTopCandidates({ limit = 10 } = {}) {
   const minTvl = Number(config.screening.minTvl ?? 0);
   const maxTvl = config.screening.maxTvl == null ? null : Number(config.screening.maxTvl);
   const minFeeActiveTvlRatio = Number(config.screening.minFeeActiveTvlRatio ?? 0);
+  const maxVolatility = config.screening.maxVolatility == null
+    ? null
+    : Number(config.screening.maxVolatility);
 
-  const eligible = pools
+  let eligible = pools
     .filter((p) => {
       const tvl = Number(p.tvl ?? p.active_tvl ?? 0);
       if (Number.isFinite(minTvl) && minTvl > 0 && tvl < minTvl) {
@@ -524,6 +557,12 @@ export async function getTopCandidates({ limit = 10 } = {}) {
       }
       if (!isUsableVolatility(p.volatility)) {
         pushFilteredReason(filteredOut, p, `volatility ${p.volatility ?? "unknown"} is unusable`);
+        return false;
+      }
+      // Max-volatility ceiling — null means no ceiling. Set explicitly in user-config
+      // or evolved automatically by lessons.js when losers cluster at high volatility.
+      if (Number.isFinite(maxVolatility) && maxVolatility > 0 && Number(p.volatility) > maxVolatility) {
+        pushFilteredReason(filteredOut, p, `volatility ${p.volatility} above maxVolatility ${maxVolatility}`);
         return false;
       }
       if (occupiedPools.has(p.pool)) {
@@ -545,8 +584,14 @@ export async function getTopCandidates({ limit = 10 } = {}) {
         return false;
       }
       return true;
-    })
-    .sort((a, b) => scoreCandidate(b) - scoreCandidate(a))
+    });
+
+  // Apply Darwin-weighted scoring so learned signal weights actually affect
+  // candidate ranking. When darwin is disabled the helper returns null and
+  // scoreCandidate falls back to raw multipliers (previous behavior).
+  const scoringWeights = getScoringWeights();
+  eligible = eligible
+    .sort((a, b) => scoreCandidate(b, scoringWeights) - scoreCandidate(a, scoringWeights))
     .slice(0, limit);
 
   if (config.screening.avoidPvpSymbols && eligible.length > 0) {

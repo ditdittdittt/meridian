@@ -29,6 +29,7 @@ import { normalizeMint } from "./wallet.js";
 import { appendDecision } from "../decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
 import { getAndClearStagedSignals } from "../signal-tracker.js";
+import { SIGNAL_NAMES } from "../signal-weights.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -1038,18 +1039,10 @@ function roundNum(value, decimals = 4) {
   return Math.round(n * factor) / factor;
 }
 
-const PERFORMANCE_SIGNAL_FIELDS = [
-  "organic_score",
-  "fee_tvl_ratio",
-  "volume",
-  "mcap",
-  "holder_count",
-  "smart_wallets_present",
-  "narrative_quality",
-  "study_win_rate",
-  "hive_consensus",
-  "volatility",
-];
+// Imported from signal-weights.js — single source of truth shared with
+// lessons.js and the Darwinian weighting system. See signal-weights.js for
+// notes on which signals are currently populated vs. placeholder.
+const PERFORMANCE_SIGNAL_FIELDS = SIGNAL_NAMES;
 
 function resolvePerformanceSignalSnapshot({ poolAddress, baseMint, tracked }) {
   const staged = config.darwin?.enabled
