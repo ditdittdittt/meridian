@@ -1055,9 +1055,19 @@ function roundNum(value, decimals = 4) {
 const PERFORMANCE_SIGNAL_FIELDS = SIGNAL_NAMES;
 
 function resolvePerformanceSignalSnapshot({ poolAddress, baseMint, tracked }) {
-  const staged = config.darwin?.enabled
-    ? getAndClearStagedSignals(poolAddress, baseMint)
-    : null;
+  // Only fall back to staged signals when the tracked position is missing a
+  // snapshot (legacy positions from before PR #2 wired the deploy snapshot).
+  //
+  // Calling getAndClearStagedSignals() unconditionally is destructive: it
+  // clears entries from memory + disk. Those entries may belong to a *future*
+  // deploy attempt for the same pool (e.g. a re-screen cycle that stages new
+  // signals between this position's deploy and close). Consuming them here
+  // would silently strip context from the next deploy.
+  let staged = null;
+  if (config.darwin?.enabled && !tracked?.signal_snapshot) {
+    staged = getAndClearStagedSignals(poolAddress, baseMint);
+  }
+
   const snapshot = {
     ...(staged || {}),
     ...(tracked?.signal_snapshot || {}),
