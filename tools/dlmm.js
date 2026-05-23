@@ -26,7 +26,7 @@ import {
 import { recordPerformance } from "../lessons.js";
 import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
 import { normalizeMint } from "./wallet.js";
-import { appendDecision } from "../decision-log.js";
+import { appendDecision, getDecisionById } from "../decision-log.js";
 import { agentMeridianJson, getAgentIdForRequests, getAgentMeridianHeaders } from "./agent-meridian.js";
 import { getAndClearStagedSignals } from "../signal-tracker.js";
 import { SIGNAL_NAMES } from "../signal-weights.js";
@@ -684,29 +684,12 @@ export async function deployPosition({
       ) || refreshed?.positions?.find((position) => position.pool === pool_address);
 
       const positionAddress = matching?.position || null;
-      if (positionAddress) {
-        const signalSnapshot = config.darwin?.enabled
-          ? getAndClearStagedSignals(pool_address, baseMint)
-          : null;
-        trackPosition({
-          position: positionAddress,
-          pool: pool_address,
-          pool_name,
-          strategy: activeStrategy,
-          bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
-          bin_step,
-          volatility: normalizedVolatility,
-          fee_tvl_ratio,
-          organic_score,
-          amount_sol: finalAmountY,
-          amount_x: finalAmountX,
-          active_bin: activeBin.binId,
-          initial_value_usd,
-          signal_snapshot: signalSnapshot,
-        });
-      }
 
-      appendDecision({
+      // Append the deploy decision FIRST so we can link its id onto the
+      // tracked position. At close time recordPerformance() looks this up
+      // to attach the original reasoning to the outcome — closing the
+      // "why did we deploy?" → "what happened?" loop.
+      const deployDecision = appendDecision({
         type: "deploy",
         actor: "SCREENER",
         pool: pool_address,
@@ -728,6 +711,29 @@ export async function deployPosition({
           upside_pct: upside_pct ?? upsideCoveragePct,
         },
       });
+
+      if (positionAddress) {
+        const signalSnapshot = config.darwin?.enabled
+          ? getAndClearStagedSignals(pool_address, baseMint)
+          : null;
+        trackPosition({
+          position: positionAddress,
+          pool: pool_address,
+          pool_name,
+          strategy: activeStrategy,
+          bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
+          bin_step,
+          volatility: normalizedVolatility,
+          fee_tvl_ratio,
+          organic_score,
+          amount_sol: finalAmountY,
+          amount_x: finalAmountX,
+          active_bin: activeBin.binId,
+          initial_value_usd,
+          signal_snapshot: signalSnapshot,
+          deploy_decision_id: deployDecision?.id || null,
+        });
+      }
 
       return {
         success: true,
@@ -823,27 +829,10 @@ export async function deployPosition({
     log("deploy", `SUCCESS — ${txHashes.length} tx(s): ${txHashes[0]}`);
 
     _positionsCacheAt = 0;
-    const signalSnapshot = config.darwin?.enabled
-      ? getAndClearStagedSignals(pool_address, baseMint)
-      : null;
-    trackPosition({
-      position: newPosition.publicKey.toString(),
-      pool: pool_address,
-      pool_name,
-      strategy: activeStrategy,
-      bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
-      bin_step,
-      volatility: normalizedVolatility,
-      fee_tvl_ratio,
-      organic_score,
-      amount_sol: finalAmountY,
-      amount_x: finalAmountX,
-      active_bin: activeBin.binId,
-      initial_value_usd,
-      signal_snapshot: signalSnapshot,
-    });
 
-    appendDecision({
+    // Append the deploy decision FIRST so we can link its id onto the
+    // tracked position (see relay path above for the rationale).
+    const deployDecision = appendDecision({
       type: "deploy",
       actor: "SCREENER",
       pool: pool_address,
@@ -864,6 +853,27 @@ export async function deployPosition({
         downside_pct: downside_pct ?? null,
         upside_pct: upside_pct ?? null,
       },
+    });
+
+    const signalSnapshot = config.darwin?.enabled
+      ? getAndClearStagedSignals(pool_address, baseMint)
+      : null;
+    trackPosition({
+      position: newPosition.publicKey.toString(),
+      pool: pool_address,
+      pool_name,
+      strategy: activeStrategy,
+      bin_range: { min: minBinId, max: maxBinId, bins_below: activeBinsBelow, bins_above: activeBinsAbove },
+      bin_step,
+      volatility: normalizedVolatility,
+      fee_tvl_ratio,
+      organic_score,
+      amount_sol: finalAmountY,
+      amount_x: finalAmountX,
+      active_bin: activeBin.binId,
+      initial_value_usd,
+      signal_snapshot: signalSnapshot,
+      deploy_decision_id: deployDecision?.id || null,
     });
 
     return {
@@ -1653,6 +1663,10 @@ export async function closePosition({ position_address, reason }) {
           tracked,
         });
 
+        // Look up the original deploy decision so the performance record
+        // captures what the agent was thinking when it opened this position.
+        const deployDecision = getDecisionById(tracked?.deploy_decision_id);
+
         await recordPerformance({
           position: position_address,
           pool: poolAddress,
@@ -1672,6 +1686,9 @@ export async function closePosition({ position_address, reason }) {
           minutes_held: minutesHeld,
           close_reason: reason || "agent decision",
           signal_snapshot: signalSnapshot,
+          deploy_decision_id: tracked?.deploy_decision_id || null,
+          deploy_reason: deployDecision?.reason || null,
+          deploy_summary: deployDecision?.summary || null,
         });
 
         appendDecision({
@@ -1940,6 +1957,10 @@ export async function closePosition({ position_address, reason }) {
         tracked,
       });
 
+      // Look up the original deploy decision so the performance record
+      // captures what the agent was thinking when it opened this position.
+      const deployDecision = getDecisionById(tracked?.deploy_decision_id);
+
       await recordPerformance({
         position: position_address,
         pool: poolAddress,
@@ -1959,6 +1980,9 @@ export async function closePosition({ position_address, reason }) {
         minutes_held: minutesHeld,
         close_reason: reason || "agent decision",
         signal_snapshot: signalSnapshot,
+        deploy_decision_id: tracked?.deploy_decision_id || null,
+        deploy_reason: deployDecision?.reason || null,
+        deploy_summary: deployDecision?.summary || null,
       });
 
       appendDecision({

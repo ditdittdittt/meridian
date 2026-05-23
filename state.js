@@ -68,6 +68,7 @@ export function trackPosition({
   organic_score,
   initial_value_usd,
   signal_snapshot = null,
+  deploy_decision_id = null,
 }) {
   const state = load();
   state.positions[position] = {
@@ -86,6 +87,10 @@ export function trackPosition({
     organic_score,
     initial_value_usd,
     signal_snapshot: signal_snapshot || null,
+    // Links this position to the decision-log entry that opened it. At close
+    // time we look this up to attach the original reasoning to the
+    // performance record — closes the "why did we deploy?" → outcome loop.
+    deploy_decision_id: deploy_decision_id || null,
     deployed_at: new Date().toISOString(),
     out_of_range_since: null,
     last_claim_at: null,

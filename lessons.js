@@ -84,6 +84,9 @@ function buildSignalSnapshot(perf) {
  * @param {number} perf.minutes_in_range  - Total minutes position was in range
  * @param {number} perf.minutes_held      - Total minutes position was held
  * @param {string} perf.close_reason   - Why it was closed
+ * @param {string} [perf.deploy_decision_id] - Decision-log id captured at deploy time
+ * @param {string} [perf.deploy_reason]   - Original deploy rationale text (from decision-log)
+ * @param {string} [perf.deploy_summary]  - Original deploy summary (from decision-log)
  */
 export async function recordPerformance(perf) {
   const data = load();
@@ -762,5 +765,113 @@ export function getPerformanceSummary() {
     avg_range_efficiency_pct: Math.round(avgRangeEfficiency * 10) / 10,
     win_rate_pct: Math.round((wins / p.length) * 100),
     total_lessons: data.lessons.length,
+  };
+}
+
+// ─── Reason-based performance analytics ────────────────────────
+
+// Reason categories — substrings to match against deploy_reason / deploy_summary.
+// Used to bucket closed positions by the kind of rationale the agent gave at
+// deploy time. Keep the matching keywords broad — the deploy reason text is
+// LLM-generated so wording varies.
+const REASON_CATEGORIES = [
+  { tag: "smart_wallets",    keywords: ["smart wallet", "smart-wallet", "kol", "alpha wallet"] },
+  { tag: "narrative",        keywords: ["narrative", "story", "thesis"] },
+  { tag: "high_fee_tvl",     keywords: ["fee/tvl", "fee tvl", "high fee", "fee ratio"] },
+  { tag: "organic_score",    keywords: ["organic"] },
+  { tag: "volume",           keywords: ["volume", "high volume"] },
+  { tag: "ath_distance",     keywords: ["ath", "all-time high", "discount"] },
+  { tag: "smart_money",      keywords: ["smart money", "smart_money"] },
+  { tag: "memory_winner",    keywords: ["past winner", "previously profitable", "memory"] },
+  { tag: "low_risk",         keywords: ["low risk", "low bundle", "low sniper", "clean"] },
+];
+
+function classifyReason(text) {
+  const tags = [];
+  if (!text) return tags;
+  const haystack = String(text).toLowerCase();
+  for (const { tag, keywords } of REASON_CATEGORIES) {
+    if (keywords.some((kw) => haystack.includes(kw))) tags.push(tag);
+  }
+  return tags;
+}
+
+/**
+ * Aggregate performance by the rationale the agent cited at deploy time.
+ *
+ * For each reason category, returns: sample count, win rate, average PnL %,
+ * and average range efficiency. Lets you answer "when the agent cited
+ * smart_wallets as the primary reason, what was the win rate?" — the
+ * highest-leverage feedback signal in the learning system.
+ *
+ * Only counts records with a non-empty deploy_reason (older records from
+ * before the decision-log linkage was wired won't have it).
+ *
+ * @param {Object} opts
+ * @param {number} [opts.hours]   - Optional time window in hours
+ * @param {number} [opts.minSamples=3] - Don't report buckets with fewer than this many samples
+ */
+export function getReasonPerformance({ hours = null, minSamples = 3 } = {}) {
+  const data = load();
+  const p = data.performance || [];
+
+  if (p.length === 0) return { total_with_reason: 0, buckets: [] };
+
+  const cutoff = hours != null
+    ? new Date(Date.now() - hours * 60 * 60 * 1000).toISOString()
+    : null;
+
+  const withReason = p.filter((r) => {
+    if (cutoff && r.recorded_at < cutoff) return false;
+    return Boolean(r.deploy_reason || r.deploy_summary);
+  });
+
+  if (withReason.length === 0) {
+    return { total_with_reason: 0, buckets: [], hours };
+  }
+
+  // Bucket by classified tag (a position can fall into multiple buckets if
+  // its reason cited several factors — that's intentional)
+  const buckets = new Map();
+  let uncategorized = 0;
+  for (const record of withReason) {
+    const text = `${record.deploy_summary || ""} ${record.deploy_reason || ""}`;
+    const tags = classifyReason(text);
+    if (tags.length === 0) {
+      uncategorized++;
+      continue;
+    }
+    for (const tag of tags) {
+      if (!buckets.has(tag)) buckets.set(tag, []);
+      buckets.get(tag).push(record);
+    }
+  }
+
+  const summary = [];
+  for (const [tag, records] of buckets) {
+    if (records.length < minSamples) continue;
+    const wins = records.filter((r) => (r.pnl_usd ?? 0) > 0).length;
+    const totalPnl = records.reduce((s, r) => s + (r.pnl_usd ?? 0), 0);
+    const avgPnlPct = records.reduce((s, r) => s + (r.pnl_pct ?? 0), 0) / records.length;
+    const avgRangeEff = records.reduce((s, r) => s + (r.range_efficiency ?? 0), 0) / records.length;
+    summary.push({
+      reason: tag,
+      sample_count: records.length,
+      win_rate_pct: Math.round((wins / records.length) * 100),
+      avg_pnl_pct: Math.round(avgPnlPct * 100) / 100,
+      total_pnl_usd: Math.round(totalPnl * 100) / 100,
+      avg_range_efficiency_pct: Math.round(avgRangeEff * 10) / 10,
+    });
+  }
+
+  // Sort by win rate desc so the most successful reasons surface first
+  summary.sort((a, b) => b.win_rate_pct - a.win_rate_pct);
+
+  return {
+    total_with_reason: withReason.length,
+    uncategorized,
+    hours,
+    min_samples: minSamples,
+    buckets: summary,
   };
 }
